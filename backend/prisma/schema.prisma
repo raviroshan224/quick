@@ -1,0 +1,325 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  OWNER  // full access, settings, reports
+  STAFF  // billing, self-assignment, payment, own commission view
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  REFUNDED
+  VOIDED
+}
+
+enum PaymentMethod {
+  CASH
+  FONEPAY  // QR-based digital payment
+  SPLIT    // split between CASH and FONEPAY
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+enum CashMovementType {
+  IN
+  OUT
+}
+
+enum InventoryMovementType {
+  STOCK_IN
+  STOCK_OUT
+  ADJUSTMENT
+}
+
+enum ImageAssetType {
+  SERVICE_ICON
+  STAFF_PHOTO
+  PRODUCT_IMAGE
+  CUSTOMER_PHOTO
+}
+
+// ─── Users ───────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  firstName String
+  lastName  String
+  role      Role     @default(STAFF)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  staff        Staff?
+  transactions Transaction[]
+
+  @@map("users")
+}
+
+// ─── Staff ────────────────────────────────────────────────────────────────────
+
+model Staff {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  phone          String?
+  specialties    String[]
+  commissionRate Float?   // optional percentage, e.g. 10.0 = 10%
+  isActive       Boolean  @default(true)
+  photoUrl       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  staffTransactions Transaction[]     @relation("StaffTransactions")
+  transactionItems  TransactionItem[]
+
+  @@map("staff")
+}
+
+// ─── Customers ────────────────────────────────────────────────────────────────
+
+model Customer {
+  id          String   @id @default(cuid())
+  firstName   String
+  lastName    String
+  email       String?  @unique
+  phone       String?
+  notes       String?
+  visitCount  Int      @default(0)
+  totalSpent  Float    @default(0)
+  photoUrl    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  transactions Transaction[]
+
+  @@map("customers")
+}
+
+// ─── Service Categories ───────────────────────────────────────────────────────
+
+model ServiceCategory {
+  id        String   @id @default(cuid())
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  services Service[]
+
+  @@map("service_categories")
+}
+
+// ─── Services ────────────────────────────────────────────────────────────────
+
+model Service {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  price       Float
+  duration    Int      // minutes
+  categoryId  String?
+  iconUrl     String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category         ServiceCategory?  @relation(fields: [categoryId], references: [id])
+  transactionItems TransactionItem[]
+
+  @@map("services")
+}
+
+// ─── Products (Inventory) ─────────────────────────────────────────────────────
+
+model Product {
+  id                String   @id @default(cuid())
+  name              String
+  description       String?
+  price             Float
+  cost              Float?
+  sku               String?  @unique
+  stock             Int      @default(0)
+  lowStockThreshold Int      @default(5)
+  category          String?
+  imageUrl          String?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  transactionItems TransactionItem[]
+  inventoryLogs    InventoryLog[]
+
+  @@map("products")
+}
+
+model InventoryLog {
+  id          String                @id @default(cuid())
+  productId   String
+  type        InventoryMovementType
+  quantity    Int
+  reason      String
+  stockBefore Int
+  stockAfter  Int
+  createdById String?
+  createdAt   DateTime              @default(now())
+
+  product Product @relation(fields: [productId], references: [id])
+
+  @@map("inventory_logs")
+}
+
+// ─── Discounts ───────────────────────────────────────────────────────────────
+
+model Discount {
+  id        String       @id @default(cuid())
+  name      String
+  type      DiscountType
+  value     Float
+  code      String?      @unique
+  isActive  Boolean      @default(true)
+  expiresAt DateTime?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  transactions Transaction[]
+
+  @@map("discounts")
+}
+
+// ─── Transactions ─────────────────────────────────────────────────────────────
+
+model Transaction {
+  id             String            @id @default(cuid())
+  customerId     String?
+  userId         String
+  staffId        String?
+  discountId     String?
+  isGuest        Boolean           @default(false)
+  guestName      String?
+  guestPhone     String?
+  subtotal       Float
+  discountAmount Float             @default(0)
+  tipAmount      Float             @default(0)
+  total          Float
+  paymentMethod  PaymentMethod
+  fonepayRef     String?           // Fonepay gateway transaction reference
+  splitCash      Float?            // SPLIT: cash portion
+  splitFonepay   Float?            // SPLIT: Fonepay portion
+  qrData         String?           // dynamic QR payload for Fonepay
+  status         TransactionStatus @default(COMPLETED)
+  notes          String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  customer     Customer?         @relation(fields: [customerId], references: [id])
+  user         User              @relation(fields: [userId], references: [id])
+  staff        Staff?            @relation("StaffTransactions", fields: [staffId], references: [id])
+  discount     Discount?         @relation(fields: [discountId], references: [id])
+  items        TransactionItem[]
+  cashMovement CashMovement?
+  refund       Refund?
+
+  @@map("transactions")
+}
+
+model TransactionItem {
+  id               String   @id @default(cuid())
+  transactionId    String
+  serviceId        String?
+  productId        String?
+  staffId          String?
+  quantity         Int      @default(1)
+  unitPrice        Float
+  totalPrice       Float
+  commissionAmount Float?   // computed from staff commissionRate at time of sale
+  createdAt        DateTime @default(now())
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  service     Service?    @relation(fields: [serviceId], references: [id])
+  product     Product?    @relation(fields: [productId], references: [id])
+  staff       Staff?      @relation(fields: [staffId], references: [id])
+
+  @@map("transaction_items")
+}
+
+// ─── Refunds ─────────────────────────────────────────────────────────────────
+
+model Refund {
+  id             String   @id @default(cuid())
+  transactionId  String   @unique
+  amount         Float
+  reason         String   // mandatory
+  refundedById   String
+  cashMovementId String?  @unique
+  createdAt      DateTime @default(now())
+
+  transaction  Transaction  @relation(fields: [transactionId], references: [id])
+  cashMovement CashMovement? @relation(fields: [cashMovementId], references: [id])
+
+  @@map("refunds")
+}
+
+// ─── Cash Drawer ─────────────────────────────────────────────────────────────
+
+model CashDrawer {
+  id              String    @id @default(cuid())
+  openedAt        DateTime  @default(now())
+  closedAt        DateTime?
+  openBalance     Float
+  closeBalance    Float?
+  expectedBalance Float?
+  difference      Float?
+  openedById      String?
+  closedById      String?
+  notes           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  movements CashMovement[]
+
+  @@map("cash_drawers")
+}
+
+model CashMovement {
+  id            String           @id @default(cuid())
+  cashDrawerId  String
+  transactionId String?          @unique
+  type          CashMovementType
+  amount        Float
+  reason        String           // mandatory — no silent cash movements
+  createdById   String?
+  createdAt     DateTime         @default(now())
+
+  cashDrawer  CashDrawer   @relation(fields: [cashDrawerId], references: [id])
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+  refund      Refund?
+
+  @@map("cash_movements")
+}
+
+// ─── Image Library ────────────────────────────────────────────────────────────
+
+model ImageAsset {
+  id        String         @id @default(cuid())
+  name      String
+  url       String
+  type      ImageAssetType
+  isDefault Boolean        @default(false)
+  createdAt DateTime       @default(now())
+
+  @@map("image_assets")
+}
